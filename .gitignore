@@ -1,3 +1,5 @@
 context.md
 pbl-state.env
 .claude
+*.log
+.pbl-tmp

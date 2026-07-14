@@ -1,234 +1,237 @@
-# README — Configuring AWS CLI + Running the Scripts (Git Bash on Windows)
+# SQL-Based Data Leak Detection on AWS
 
-This guide walks through setting up your terminal so you can run `setup.sh` /
-`teardown.sh` (the bash scripts embedded in [context.md](context.md)) from a
-Windows machine using **Git Bash**.
+A cloud security project (Cloud PBL) that detects **data leaks and suspicious
+access** by writing **SQL detection rules against CloudTrail audit logs** using
+Amazon Athena, and raising email alerts via SNS + Lambda.
+
+The whole stack is built, demoed, and torn down with a handful of bash scripts —
+no console clicking required.
 
 ---
 
-## 1. Install prerequisites
+## What it does
+
+Every API call in the AWS account is captured by **CloudTrail** and written as
+JSON logs to **S3**. **Athena** queries those logs with plain SQL. A set of
+**6 detection rules** looks for the fingerprints of a data leak; when a rule
+matches, a **Lambda** function publishes an **SNS** alert email.
+
+```
+                 ┌─────────────┐      writes logs      ┌────────────┐
+   AWS activity  │ CloudTrail  │ ────────────────────▶ │  S3 bucket │
+  (RDS, S3, IAM) │ (audit)     │   (JSON, gzipped)     │  (logs)    │
+                 └─────────────┘                       └─────┬──────┘
+                                                             │ SQL over logs
+                                                       ┌─────▼──────┐
+                                                       │   Athena   │
+                                                       │ 6 SQL rules│
+                                                       └─────┬──────┘
+                                            rule matched ?   │ yes
+                                                       ┌─────▼──────┐   publish   ┌───────┐
+                                                       │   Lambda   │ ──────────▶ │  SNS  │─▶ email
+                                                       │ (detector) │             └───────┘
+                                                       └────────────┘
+```
+
+### The 6 detection rules (the cases this project detects)
+
+| # | Case | Detection rule (Athena SQL) | Demo script |
+|---|------|-----------------------------|-------------|
+| 1 | **High-frequency access** | `> 50` events from one `sourceIPAddress` | `demos/demo-1-high-frequency.sh` |
+| 2 | **Off-hours access** | activity between `00:00–05:00 UTC` | `demos/demo-2-off-hours.sh` |
+| 3 | **Unknown region** | `awsRegion` not in the approved region | `demos/demo-3-unknown-region.sh` |
+| 4 | **Policy modification** | `PutBucketPolicy` / `PutBucketAcl` events | `demos/demo-4-policy-modification.sh` |
+| 5 | **Consecutive failed logins** | `>= 3` failed `ConsoleLogin` from one IP | `demos/demo-5-failed-logins.sh` |
+| 6 | **Bulk S3 download** | `> 100` `GetObject` calls from one IP | `demos/demo-6-bulk-download.sh` |
+
+---
+
+## Repository layout
+
+```
+Cloud PBL/
+├── README.md                 ← you are here
+├── context.md                ← full narrative + raw commands (reference)
+├── pbl-state.env             ← resource IDs, written by setup.sh (do not delete)
+├── scripts/
+│   ├── setup.sh              ← builds the whole stack (VPC→RDS→CloudTrail→Athena→SNS→Lambda)
+│   ├── setup-automation.sh   ← adds the scheduled auto-detector (EventBridge every 15 min)
+│   ├── demo.sh               ← quick end-to-end demo (all activity at once)
+│   ├── teardown.sh           ← deletes everything (stop AWS billing)
+│   └── demos/                ← one focused demo per detection case ★ NEW
+│       ├── _common.sh        ← shared helper (loads state, runs Athena queries)
+│       ├── demo-1-high-frequency.sh
+│       ├── demo-2-off-hours.sh
+│       ├── demo-3-unknown-region.sh
+│       ├── demo-4-policy-modification.sh
+│       ├── demo-5-failed-logins.sh
+│       ├── demo-6-bulk-download.sh
+│       └── run-all-demos.sh  ← runs all 6 in sequence
+└── docs/                     ← report + slide decks
+```
+
+---
+
+## Step-by-step
+
+### Step 0 — Prerequisites (one time)
+
+Runs on Windows via **Git Bash**. Install and confirm each tool is on PATH:
 
 | Tool | Why | Install |
 |------|-----|---------|
-| Git for Windows (Git Bash) | gives you a bash shell on Windows | https://git-scm.com/download/win |
-| AWS CLI v2 | runs all `aws ...` commands in the scripts | https://awscli.amazonaws.com/AWSCLIV2.msi |
-| `jq` | JSON parsing used by the scripts | see step 1.1 |
-| `zip` | packages the Lambda function code | see step 1.1 |
-| MySQL client | optional — to seed/query `employee_data` | https://dev.mysql.com/downloads/installer/ |
-| Python 3 | optional — used by `teardown.sh` to purge S3 object versions | https://www.python.org/downloads/ |
+| Git for Windows (Git Bash) | bash shell on Windows | https://git-scm.com/download/win |
+| AWS CLI v2 | runs every `aws …` command | https://awscli.amazonaws.com/AWSCLIV2.msi |
+| `jq` | JSON parsing | `winget install jqlang.jq` |
+| `zip` | packages the Lambda code | `winget install GnuWin32.Zip` |
+| MySQL client | seed/query the RDS DB (cases 1, 5) | https://dev.mysql.com/downloads/installer/ |
+| Python 3 | teardown's S3 version purge | https://www.python.org/downloads/ |
 
-Run the MSI installers normally (Next → Next → Finish), then **close and
-reopen Git Bash** so the new `PATH` entries are picked up.
-
-### 1.1 Get `jq` and `zip` into Git Bash
-
-Git Bash doesn't ship with `jq`/`zip`. Easiest options:
+After installing, **reopen Git Bash**, then verify:
 
 ```bash
-# Option A: winget (Windows 10/11)
-winget install jqlang.jq
-winget install GnuWin32.Zip
-
-# Option B: download jq.exe manually and drop it on your PATH
-# https://github.com/jqlang/jq/releases  -> jq-windows-amd64.exe
-# rename to jq.exe and place in C:\Windows or any folder already on PATH
+aws --version && jq --version && zip -v && mysql --version
 ```
 
-Verify everything is visible inside Git Bash:
+### Step 1 — Configure AWS credentials
 
-```bash
-aws --version
-jq --version
-zip -v
-python3 --version
-mysql --version
-```
-
-If any command isn't found, restart Git Bash (and your machine, if you just
-installed something) and try again.
-
----
-
-## 2. Configure AWS CLI credentials
-
-You need an AWS IAM user (or SSO profile) with permissions for: EC2/VPC, S3,
-CloudTrail, RDS, Athena, SNS, Lambda, IAM (role creation).
-
-1. In the AWS Console → IAM → Users → your user → **Security credentials** →
-   **Create access key** (choose "Command Line Interface (CLI)").
-2. Copy the **Access Key ID** and **Secret Access Key** (shown once).
-3. In Git Bash:
+Your IAM user needs permissions for EC2/VPC, S3, CloudTrail, RDS, Athena, SNS,
+Lambda, IAM, and (for the automation layer) EventBridge.
 
 ```bash
 aws configure
-# AWS Access Key ID:     <paste>
-# AWS Secret Access Key: <paste>
-# Default region name:   ap-south-1
-# Default output format: json
+#   AWS Access Key ID:     <paste>
+#   AWS Secret Access Key: <paste>
+#   Default region name:   ap-south-1
+#   Default output format: json
+
+aws sts get-caller-identity     # confirm it works
 ```
 
-4. Confirm it works:
+> Never commit your keys. They live in `~/.aws/credentials`.
 
-```bash
-aws sts get-caller-identity
-```
-
-You should see your account ID, user ARN, etc. If you get a credentials
-error, re-run `aws configure` and double-check the keys.
-
-> Keep these keys private — never commit them or paste them into shared
-> files. `~/.aws/credentials` is where `aws configure` stores them.
-
----
-
-## 3. Extract the scripts from context.md
-
-The full source of `setup.sh` and `teardown.sh` lives inside
-[context.md](context.md) as fenced code blocks (`## setup.sh` / `## teardown.sh`
-sections). Open `context.md`, copy each block into its own file:
-
-```bash
-cd "/d/MCA/Cloud PBL"
-# create setup.sh and teardown.sh, paste the corresponding code block into each,
-# then save and close.
-```
-
-(In Git Bash, `/d/MCA/Cloud PBL` is the Windows path `D:\MCA\Cloud PBL`.)
-
-Make both scripts executable:
-
-```bash
-chmod +x setup.sh teardown.sh
-```
-
----
-
-## 4. Run the project
+### Step 2 — Build the stack
 
 ```bash
 cd "/d/MCA/Cloud PBL"
 
-# optional overrides — defaults already match the names used in setup.sh
-export DB_PASS='YourStrongPass!'
-export SNS_EMAIL='you@example.com'
-export REGION='ap-south-1'
-export SUFFIX='1rv25mc090'
+# optional overrides (defaults already work)
+export SUFFIX='1rv25mc103'          # your unique tag
+export DB_PASS='Admin12345!'        # RDS master password
+export SNS_EMAIL='you@example.com'  # where alerts go
 
-# build everything (~10 min, mostly waiting on RDS to become available)
-./setup.sh
+./scripts/setup.sh                  # ~10 min (mostly waiting on RDS)
 ```
 
-While it runs:
-- An SNS subscription confirmation email will be sent to `$SNS_EMAIL` —
-  open it and click **Confirm subscription**, or the Lambda's alert emails
-  won't be delivered.
-- Resource IDs created along the way are saved to `pbl-state.env` in the
-  same folder — **don't delete this file**, `teardown.sh` needs it.
+This creates the VPC, S3 log bucket, CloudTrail trail, RDS MySQL (+ seeded
+`employee_data` table), the Athena `cloudtrail_logs` table, the SNS topic, and
+the alert Lambda. Every resource ID is written to **`pbl-state.env`** — the
+demo and teardown scripts read it, so **don't delete that file**.
 
-Test the alert path:
+### Step 3 — Confirm the SNS email subscription
+
+`setup.sh` sends a **"Confirm subscription"** email to `$SNS_EMAIL`. **Open it
+and click the link**, otherwise no alert emails will be delivered.
+
+### Step 4 — Demonstrate each detection case
+
+Each script **generates the suspicious activity for its case, then runs the
+matching SQL detection query** and prints the result.
 
 ```bash
-aws lambda invoke --region "$REGION" \
-  --function-name "data-leak-alert-handler-Serah-$SUFFIX" \
-  /tmp/out.json
-cat /tmp/out.json
+cd "/d/MCA/Cloud PBL/scripts/demos"
+
+./demo-1-high-frequency.sh      # burst of >50 API calls from one IP
+./demo-2-off-hours.sh           # activity in the 00:00–05:00 UTC window
+./demo-3-unknown-region.sh      # an API call from us-east-1
+./demo-4-policy-modification.sh # a PutBucketPolicy event
+./demo-5-failed-logins.sh       # failed ConsoleLogin attempts (part manual)
+./demo-6-bulk-download.sh       # >100 GetObject calls (bulk exfiltration)
+
+# ...or all six at once:
+./run-all-demos.sh
 ```
 
-Run the suspicious-activity SQL and Athena hunt queries from `context.md`
-(sections "Suspicious-activity simulation" and "Athena hunt queries") to
-exercise the monitoring pipeline.
+> **⏱ CloudTrail delivery lag.** CloudTrail batches logs to S3 every **5–15
+> minutes**. On the **first** run a query often shows **0 rows** for the
+> activity you just generated — that's expected. Wait ~10–15 minutes and
+> **re-run the same demo** (or `run-all-demos.sh` a second time); the matches
+> will appear. Two cases need extra care:
+> - **Case 2 (off-hours)** only matches live activity if you run it **between
+>   00:00 and 05:00 UTC** — the script prints the current UTC hour.
+> - **Case 5 (failed logins)** needs real **browser** console sign-in failures
+>   (CLI calls don't produce `ConsoleLogin` events) — the script prints the
+>   exact steps.
+> - **Case 6 (bulk download)** turns on S3 **data-event** logging first, since
+>   `GetObject` isn't a management event.
 
----
-
-## 5. Demo the pipeline end-to-end
-
-Once `setup.sh` has finished and the SNS subscription is confirmed, run:
+The classic all-in-one walkthrough (from the PDF) still works too:
 
 ```bash
-./demo.sh
+cd "/d/MCA/Cloud PBL"
+./scripts/demo.sh
 ```
 
-This automates the manual walkthrough from the PDF against the live stack
-(reads `pbl-state.env`):
+### Step 5 — (Optional) Enable the automatic detector
 
-1. Simulates suspicious DB activity (Part E) — massive `SELECT *` extraction,
-   high-value target queries, and failed brute-force login attempts.
-2. Runs the three Athena hunt queries (Part F) against `cloudtrail_logs` and
-   prints results. Note: CloudTrail can take 5–15 minutes to deliver recent
-   events to S3, so a freshly-created trail may show empty results at first —
-   re-run later if you need to see specific events show up.
-3. Invokes the Lambda directly (Part H) to dispatch the SNS alert email —
-   this is the same manual trigger the PDF uses (there's no automatic
-   Athena → Lambda wiring in this project), so the email arrives right after
-   this step runs, not automatically on a schedule.
-
----
-
-## 6. Enable the automated detection pipeline (optional)
-
-`demo.sh` is a manual trigger. To get the **fully automated** monitoring layer
-described in `SQL_Data_Leak_Detection_AWS.pptx` (slides 11–14) — where the
-system hunts and alerts on its own with no human in the loop — run:
+`demo.sh`/the per-case demos are manual. To get the **hands-off** monitoring
+layer — a Lambda that runs all 6 rules on a schedule and emails only on a real
+hit:
 
 ```bash
-./setup-automation.sh
+./scripts/setup-automation.sh
 ```
 
-This adds, on top of the `setup.sh` stack:
-
-- A new **`DataLeakDetector`** Lambda that runs the **6 detection rules**
-  (high-frequency access, off-hours, unknown region, policy modification,
-  failed logins, bulk download) as Athena SQL queries and publishes a
-  structured SNS alert **only when a rule matches** (returns ≥1 row).
-- Its own IAM role scoped to Athena + S3 + `sns:Publish` (the original
-  `data-leak-alert-handler` Lambda is left untouched).
-- An **EventBridge rule** `DataLeakDetectionSchedule` on `rate(15 minutes)`
-  that invokes the detector automatically — this is the "every 15-minute
-  monitoring cycle" from the PPT.
-
-> Your IAM user needs `events:PutRule`, `events:PutTargets`, and
-> `lambda:AddPermission`. If you hit an `events:PutRule` AccessDenied, attach
-> `AmazonEventBridgeFullAccess` (or equivalent) to your user and re-run.
-
-Once enabled, the detector fires on its own every 15 minutes. To trigger a
-cycle immediately for a demo:
+This adds the **`DataLeakDetector`** Lambda (its own scoped IAM role) and an
+**EventBridge** rule on `rate(15 minutes)`. Trigger a cycle immediately:
 
 ```bash
 source pbl-state.env
 aws lambda invoke --region "$REGION" --function-name "$DETECTOR_NAME" out.json && cat out.json
 ```
 
-The alert email arrives only if a rule matched (e.g. an IP with >50 events).
-The new resources are appended to `pbl-state.env`, so `teardown.sh` removes
-them automatically.
+An alert email arrives only if a rule matched. New resources are appended to
+`pbl-state.env` so teardown removes them.
 
----
+> Needs `events:PutRule`, `events:PutTargets`, `lambda:AddPermission`. On an
+> `events:PutRule` AccessDenied, attach `AmazonEventBridgeFullAccess` and re-run.
 
-## 7. Tear everything down (avoid ongoing AWS cost)
+### Step 6 — Tear everything down (avoid ongoing cost)
 
 ```bash
 cd "/d/MCA/Cloud PBL"
-./teardown.sh
+./scripts/teardown.sh
 ```
 
-This deletes, in order: Lambda + its IAM role, the SNS topic, the Athena
-table, the CloudTrail trail, the RDS instance + subnet group, the S3 bucket
-(including all object versions), the security group, route table, subnets,
-internet gateway, and the VPC. It uses `set -uo pipefail` (no `-e`) with
-`|| true` on every destructive call, so it keeps going even if one step
-fails (e.g. RDS still finalizing) — re-run it once or twice if anything was
-skipped, then check the AWS Console (Billing → Bills, and each service's
-console page) to confirm nothing billable is left running.
+Deletes (in dependency order) the automation layer, both Lambdas + IAM roles,
+SNS topic, Athena table, CloudTrail trail, RDS instance + subnet group, the S3
+bucket (all object versions), security group, route table, subnets, IGW, and
+VPC. It's best-effort (`|| true` on every call) — **re-run once or twice** if a
+step was skipped (e.g. RDS still finalizing), then confirm in the AWS Console
+that nothing billable remains.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Likely cause / fix |
+| Symptom | Fix |
 |---|---|
-| `aws: command not found` | Reopen Git Bash after installing AWS CLI v2, or add `C:\Program Files\Amazon\AWSCLIV2` to PATH |
+| `aws: command not found` | Reopen Git Bash after installing AWS CLI v2 |
 | `Unable to locate credentials` | Run `aws configure` again |
-| `jq: command not found` | See step 1.1 |
-| Script hangs at RDS step | Normal — `aws rds wait db-instance-available` can take 5–10 min |
-| `teardown.sh` leaves the S3 bucket behind | Versioned objects/delete markers remain; re-run `./teardown.sh` — it includes a Python/boto3 cleanup pass for exactly this case |
-| Permission denied (IAM) errors | Your IAM user/role needs broader permissions (EC2, S3, RDS, CloudTrail, Athena, SNS, Lambda, IAM) |
+| `jq: command not found` | `winget install jqlang.jq`, reopen Git Bash |
+| Demo query shows 0 rows | CloudTrail lag — wait 10–15 min, re-run the demo |
+| Case 2 never matches | Run it between 00:00–05:00 UTC (script prints the hour) |
+| Case 5 never matches | Fail real **browser** console logins; CLI can't produce `ConsoleLogin` |
+| Case 6 shows no `GetObject` | S3 data events must be on — the script enables them; needs `cloudtrail:PutEventSelectors` |
+| Setup hangs at RDS step | Normal — `rds wait db-instance-available` takes 5–10 min |
+| `teardown.sh` leaves the S3 bucket | Versioned objects remain — re-run teardown (it has a boto3 purge pass) |
+| Permission denied (IAM) | Your IAM user needs EC2, S3, RDS, CloudTrail, Athena, SNS, Lambda, IAM, EventBridge |
+
+---
+
+## Reference
+
+- **`context.md`** — full narrative, every raw command, and the original manual
+  walkthrough this automation is based on.
+- **`docs/`** — the project report and slide decks (`SQL_Data_Leak_Detection_AWS.pptx`
+  slides 11–14 describe the automation layer).
