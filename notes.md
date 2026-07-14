@@ -49,15 +49,18 @@ SIEM — cheap, transparent, and easy to extend.
    `pbl-state.env`.
 4. **Confirm the SNS email** — click the "Confirm subscription" link emailed to
    your address, or no alerts are delivered.
-5. **Demonstrate detection** — run the per-case demos in `scripts/demos/`
-   (each generates the suspicious activity and runs its Athena SQL rule):
+5. **Deploy the automatic detector** — `./scripts/setup-automation.sh` adds a
+   `DataLeakDetector` Lambda + EventBridge rule that runs all 6 SQL rules on a
+   schedule and emails via SNS only on a match. Detection is automatic — no human
+   runs a query. (The 1-minute schedule is created disabled; enable it around a
+   demo with `aws events enable-rule ...`.)
+6. **Simulate attacks** — the scripts in `scripts/demos/` are the *attacker*; each
+   only generates the suspicious activity for one scenario. The cloud detector
+   catches it automatically.
    ```bash
    cd scripts/demos && ./run-all-demos.sh
    ```
-   Note: CloudTrail has a 5–15 min log-delivery lag, so run demos a few minutes
-   before you need results.
-6. **(Optional) Automate** — `./scripts/setup-automation.sh` adds a
-   `DataLeakDetector` Lambda + EventBridge rule that runs all 6 rules every
-   15 minutes and emails only on a hit.
+   Note: CloudTrail has a 5–15 min log-delivery lag, so the alert arrives a few
+   minutes after the attack.
 7. **Tear down** — `./scripts/teardown.sh` deletes every resource to stop AWS
    billing.

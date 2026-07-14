@@ -43,8 +43,30 @@ LAMBDA_RUNTIME="python3.12"
 echo "=============================================="
 echo " Automation layer setup ($REGION)"
 echo " Detector Lambda : $DETECTOR_NAME"
-echo " Schedule        : rate(15 minutes)"
+echo " Schedule        : rate(1 minute) (created DISABLED)"
 echo "=============================================="
+
+#------------------------------------------------------------------------------
+# 0. Enable S3 data-event logging on the trail (DEFENSIVE setup)
+#    GetObject is an S3 *data* event; CloudTrail does not log it by default, so
+#    the "bulk download" rule would never see anything. We enable it here on the
+#    defender side (an attacker would never log their own downloads). Removed
+#    automatically when teardown.sh deletes the trail.
+#------------------------------------------------------------------------------
+echo
+echo ">>> [0] Enabling S3 data-event logging on trail $TRAIL_NAME ..."
+aws cloudtrail put-event-selectors --region "$REGION" \
+  --trail-name "$TRAIL_NAME" \
+  --event-selectors "[{
+    \"ReadWriteType\": \"All\",
+    \"IncludeManagementEvents\": true,
+    \"DataResources\": [{
+      \"Type\": \"AWS::S3::Object\",
+      \"Values\": [\"arn:aws:s3:::${S3_BUCKET}/\"]
+    }]
+  }]" >/dev/null \
+  && echo "    Data events ON (GetObject on $S3_BUCKET is now logged)." \
+  || echo "    [WARN] could not enable data events (need cloudtrail:PutEventSelectors)."
 
 #------------------------------------------------------------------------------
 # 1. IAM role for the detector Lambda
@@ -274,15 +296,20 @@ DETECTOR_ARN=$(aws lambda get-function --region "$REGION" \
 echo "    $DETECTOR_ARN"
 
 #------------------------------------------------------------------------------
-# 4. EventBridge schedule -> invoke detector every 15 minutes
+# 4. EventBridge schedule -> invoke detector every 1 minute
+#    Created DISABLED on purpose: the detector is stateless and re-alerts on the
+#    same historical logs every cycle, so an always-on 1-minute rule would email
+#    continuously. Enable it only around a demo:
+#      aws events enable-rule  --region "$REGION" --name "$SCHEDULE_RULE_NAME"
+#      aws events disable-rule --region "$REGION" --name "$SCHEDULE_RULE_NAME"
 #------------------------------------------------------------------------------
 echo
-echo ">>> [4] Creating EventBridge rule: $SCHEDULE_RULE_NAME (rate 15 min) ..."
+echo ">>> [4] Creating EventBridge rule: $SCHEDULE_RULE_NAME (rate 1 min, DISABLED) ..."
 RULE_ARN=$(aws events put-rule --region "$REGION" \
   --name "$SCHEDULE_RULE_NAME" \
-  --schedule-expression "rate(15 minutes)" \
-  --state ENABLED \
-  --description "Runs DataLeakDetector every 15 minutes" \
+  --schedule-expression "rate(1 minute)" \
+  --state DISABLED \
+  --description "Runs DataLeakDetector every 1 minute (enable around a demo)" \
   --query 'RuleArn' --output text)
 save SCHEDULE_RULE_NAME "$SCHEDULE_RULE_NAME"
 
@@ -297,16 +324,21 @@ aws lambda add-permission --region "$REGION" \
 aws events put-targets --region "$REGION" \
   --rule "$SCHEDULE_RULE_NAME" \
   --targets "Id=detector,Arn=$DETECTOR_ARN" >/dev/null
-echo "    Rule armed -> $DETECTOR_NAME"
+echo "    Rule wired -> $DETECTOR_NAME (currently DISABLED)"
 
 echo
 echo "=============================================="
 echo " AUTOMATION LAYER READY"
 echo "=============================================="
-echo " The detector now runs every 15 minutes automatically."
-echo " It emails the SNS topic ONLY when a detection rule fires."
+echo " The DataLeakDetector runs the 6 SQL rules and emails the SNS topic"
+echo " ONLY when a rule fires. The 1-minute schedule is DISABLED for now."
 echo
-echo " Invoke it once now to test:"
+echo " Enable automatic detection (do this ~2 min before a demo):"
+echo "   aws events enable-rule  --region $REGION --name $SCHEDULE_RULE_NAME"
+echo " Disable it again afterwards:"
+echo "   aws events disable-rule --region $REGION --name $SCHEDULE_RULE_NAME"
+echo
+echo " Or run one detection cycle by hand right now:"
 echo "   aws lambda invoke --region $REGION --function-name $DETECTOR_NAME out.json && cat out.json"
 echo
 echo " New resource IDs appended to $STATE_FILE (teardown.sh will remove them)."

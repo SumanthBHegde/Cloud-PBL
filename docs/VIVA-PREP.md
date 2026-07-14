@@ -253,13 +253,20 @@ ARN, the exact bucket).
 ### EventBridge (automation layer)
 
 **Q: What is EventBridge and what does it do here?**
-An event bus / scheduler. We create a **rule** with a
-`rate(15 minutes)` schedule that **invokes the detector Lambda automatically**,
-so monitoring runs with no human in the loop.
+An event bus / scheduler. We create a **rule** with a `rate(1 minute)` schedule
+that **invokes the detector Lambda automatically**, so monitoring runs with no
+human in the loop. (The design default is `rate(15 minutes)`; we use 1 minute so
+the automatic alert is fast enough to show live in the demo.)
 
 **Q: rate() vs cron()?**
-`rate(15 minutes)` = fixed interval. `cron(…)` = specific times (e.g. every day
-at 2 AM). We used `rate` for a simple periodic sweep.
+`rate(1 minute)` = fixed interval. `cron(…)` = specific times (e.g. every day at
+2 AM). We used `rate` for a simple periodic sweep.
+
+**Q: Why is the schedule left disabled until the demo?**
+The detector is **stateless** — each run re-evaluates all historical logs, so it
+would keep re-alerting on the same old events every minute. We enable the rule
+just before the demo and disable it after. (A production fix: scope each query to
+a recent time window, or de-duplicate alerts.)
 
 ---
 
@@ -378,37 +385,48 @@ to **learn** how CloudTrail + Athena + SQL detection actually work under the hoo
 
 ## 9. Live demo script (what to do & say tomorrow)
 
+The model to convey: **the demo scripts are the *attacker*; detection & alerting
+are automatic in the cloud.** You launch an attack; the `DataLeakDetector` Lambda
+(EventBridge, every 1 min) runs the 6 SQL rules itself and emails on a match — you
+never run a query.
+
 1. **Show the architecture** (Section 2 diagram) — give the one-line story.
 2. **Show the database** — connect and `SELECT * FROM employee_data;` to show the
    sensitive asset you're protecting.
-3. **Run a detection demo**, e.g.:
+3. **Arm the automatic detector** (~2 min before you start attacking):
    ```bash
-   cd "/d/MCA/Cloud PBL/scripts/demos"
-   ./demo-1-high-frequency.sh
+   cd "/d/MCA/Cloud PBL" && source pbl-state.env
+   aws events enable-rule --region "$REGION" --name "$SCHEDULE_RULE_NAME"
    ```
-   Explain: it fires 60 API calls → CloudTrail logs them → the Athena SQL rule
-   flags the IP with >50 events.
-4. **Explain the CloudTrail lag** up front: if the query shows 0 rows, that's the
-   5–15 min delivery delay — re-run and it appears. (Run the demos ~15 min before
-   the viva so the data is already in S3.)
-5. **Show an alert email** — invoke the alert Lambda:
+4. **Launch an attack** — run an attacker script:
    ```bash
-   source ../../pbl-state.env
-   aws lambda invoke --region "$REGION" --function-name "$LAMBDA_NAME" out.json && cat out.json
+   cd scripts/demos && ./demo-1-high-frequency.sh
    ```
-   Then show the alert email in the inbox. (This is the `data-leak-alert-handler`
-   Lambda, deployed by `setup.sh`.)
-6. **Walk the 6 rules** (Section 4 table) — one sentence each.
-7. **Mention teardown** — you can destroy everything with one script to avoid cost.
+   Explain: it fires 60 API calls from one IP → CloudTrail logs them to S3. The
+   script does **not** detect anything — it's just the attacker.
+5. **Explain the CloudTrail lag:** logs take 5–15 min to reach S3, so the detector
+   sees the attack shortly after. Your logs are **pre-warmed**, so the detector
+   already has plenty to catch.
+6. **Show the automatic alert** — the enabled schedule fires the detector every
+   minute; show the **alert email** landing in the inbox. For an instant, on-demand
+   proof, invoke the detector yourself (it still does the detection):
+   ```bash
+   aws lambda invoke --region "$REGION" --function-name "$DETECTOR_NAME" out.json && cat out.json
+   # e.g. {"body": "2 rule(s) triggered; alert sent."}
+   ```
+7. **Walk the 6 rules** (Section 4 table) — one sentence each; note the SQL lives
+   in the detector Lambda's `RULES` list.
+8. **Disarm + mention teardown:**
+   ```bash
+   aws events disable-rule --region "$REGION" --name "$SCHEDULE_RULE_NAME"
+   ```
+   and note you can destroy everything with `./scripts/teardown.sh` to avoid cost.
 
-> **Pre-demo checklist:** run `./scripts/demos/run-all-demos.sh` ~15 minutes
-> before your slot so CloudTrail has delivered the logs; confirm the SNS email
-> subscription is confirmed; keep the architecture diagram open.
+> **Pre-demo checklist:** confirm the **SNS email subscription** (or no alert
+> arrives); logs are already pre-warmed, but you can re-run
+> `./scripts/demos/run-all-demos.sh` for fresh activity; `enable-rule` ~2 min
+> before you start and `disable-rule` after; keep the architecture diagram open.
 
-> **On the automation layer:** the scheduled `DataLeakDetector` (EventBridge
-> every 15 min) is **built and documented** (`scripts/setup-automation.sh`) but
-> **not deployed** in this demo run — we're showing detection **manually** so
-> each rule is visible step by step. If asked, say: *"the automation layer is a
-> single script away; it runs the same 6 SQL rules on a 15-minute schedule and
-> emails only on a hit."* You can enable it live with
-> `./scripts/setup-automation.sh` if the examiner wants to see it.
+> **Why the schedule is disabled by default:** the detector is stateless and would
+> otherwise re-alert on the same historical logs every minute (see §3 EventBridge).
+> Enabling it only around the demo keeps your inbox sane.

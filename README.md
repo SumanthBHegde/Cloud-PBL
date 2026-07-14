@@ -35,8 +35,8 @@ matches, a **Lambda** function publishes an **SNS** alert email.
 
 ### The 6 detection rules (the cases this project detects)
 
-| # | Case | Detection rule (Athena SQL) | Demo script |
-|---|------|-----------------------------|-------------|
+| # | Case | Detection rule (Athena SQL) | Attacker script |
+|---|------|-----------------------------|-----------------|
 | 1 | **High-frequency access** | `> 50` events from one `sourceIPAddress` | `demos/demo-1-high-frequency.sh` |
 | 2 | **Off-hours access** | activity between `00:00–05:00 UTC` | `demos/demo-2-off-hours.sh` |
 | 3 | **Unknown region** | `awsRegion` not in the approved region | `demos/demo-3-unknown-region.sh` |
@@ -55,11 +55,11 @@ Cloud PBL/
 ├── pbl-state.env             ← resource IDs, written by setup.sh (do not delete)
 ├── scripts/
 │   ├── setup.sh              ← builds the whole stack (VPC→RDS→CloudTrail→Athena→SNS→Lambda)
-│   ├── setup-automation.sh   ← adds the scheduled auto-detector (EventBridge every 15 min)
-│   ├── demo.sh               ← quick end-to-end demo (all activity at once)
+│   ├── setup-automation.sh   ← adds the scheduled auto-detector (EventBridge every 1 min)
+│   ├── demo.sh               ← quick end-to-end manual walkthrough (legacy)
 │   ├── teardown.sh           ← deletes everything (stop AWS billing)
-│   └── demos/                ← one focused demo per detection case ★ NEW
-│       ├── _common.sh        ← shared helper (loads state, runs Athena queries)
+│   └── demos/                ← attacker scripts: one per scenario (generate activity only)
+│       ├── _common.sh        ← shared helper (loads state, banners, notes)
 │       ├── demo-1-high-frequency.sh
 │       ├── demo-2-off-hours.sh
 │       ├── demo-3-unknown-region.sh
@@ -133,68 +133,70 @@ demo and teardown scripts read it, so **don't delete that file**.
 `setup.sh` sends a **"Confirm subscription"** email to `$SNS_EMAIL`. **Open it
 and click the link**, otherwise no alert emails will be delivered.
 
-### Step 4 — Demonstrate each detection case
+### Step 4 — Deploy the automatic detector
 
-Each script **generates the suspicious activity for its case, then runs the
-matching SQL detection query** and prints the result.
+This is what makes detection **hands-off**: a `DataLeakDetector` Lambda that holds
+all 6 SQL rules and is triggered by an **EventBridge** schedule — no human runs a
+query.
 
 ```bash
-cd "/d/MCA/Cloud PBL/scripts/demos"
+./scripts/setup-automation.sh
+```
 
+This creates the **`DataLeakDetector`** Lambda (its own scoped IAM role), turns on
+S3 **data-event logging** (so the bulk-download rule can see `GetObject`), and an
+**EventBridge** rule on `rate(1 minute)` — created **DISABLED** on purpose (the
+detector is stateless and would otherwise re-alert on the same historical logs
+every minute). New resource IDs append to `pbl-state.env`.
+
+> Needs `events:PutRule`, `events:PutTargets`, `lambda:AddPermission`. On an
+> `events:PutRule` AccessDenied, attach `AmazonEventBridgeFullAccess` and re-run.
+
+### Step 5 — Simulate attacks & watch the automatic alerts
+
+The scripts in `scripts/demos/` are the **attacker** — each one only *generates*
+the suspicious activity for one scenario. Detection and the alert email happen
+automatically in the cloud.
+
+**Arm the detector**, launch an attack, then **disarm**:
+
+```bash
+source pbl-state.env
+aws events enable-rule --region "$REGION" --name "$SCHEDULE_RULE_NAME"   # ~2 min before
+
+cd scripts/demos
 ./demo-1-high-frequency.sh      # burst of >50 API calls from one IP
 ./demo-2-off-hours.sh           # activity in the 00:00–05:00 UTC window
 ./demo-3-unknown-region.sh      # an API call from us-east-1
 ./demo-4-policy-modification.sh # a PutBucketPolicy event
 ./demo-5-failed-logins.sh       # failed ConsoleLogin attempts (part manual)
 ./demo-6-bulk-download.sh       # >100 GetObject calls (bulk exfiltration)
+./run-all-demos.sh              # ...or all six at once
 
-# ...or all six at once:
-./run-all-demos.sh
+cd ../..
+aws events disable-rule --region "$REGION" --name "$SCHEDULE_RULE_NAME"  # after the demo
+```
+
+For an **instant** check instead of waiting for a schedule tick, invoke the
+detector directly (it still does the detection itself):
+
+```bash
+aws lambda invoke --region "$REGION" --function-name "$DETECTOR_NAME" out.json && cat out.json
+# e.g. {"body": "2 rule(s) triggered; alert sent."}
 ```
 
 > **⏱ CloudTrail delivery lag.** CloudTrail batches logs to S3 every **5–15
-> minutes**. On the **first** run a query often shows **0 rows** for the
-> activity you just generated — that's expected. Wait ~10–15 minutes and
-> **re-run the same demo** (or `run-all-demos.sh` a second time); the matches
-> will appear. Two cases need extra care:
-> - **Case 2 (off-hours)** only matches live activity if you run it **between
->   00:00 and 05:00 UTC** — the script prints the current UTC hour.
+> minutes**, so the detector sees a fresh attack a few minutes after you launch
+> it. Three scenarios need extra care:
+> - **Case 2 (off-hours)** only matches if the activity happens **between 00:00
+>   and 05:00 UTC** — the script prints the current UTC hour.
 > - **Case 5 (failed logins)** needs real **browser** console sign-in failures
->   (CLI calls don't produce `ConsoleLogin` events) — the script prints the
->   exact steps.
-> - **Case 6 (bulk download)** turns on S3 **data-event** logging first, since
->   `GetObject` isn't a management event.
+>   (CLI calls don't produce `ConsoleLogin` events) — the script prints the steps.
+> - **Case 6 (bulk download)** relies on S3 **data-event** logging, enabled by
+>   `setup-automation.sh` in Step 4.
 
-The classic all-in-one walkthrough (from the PDF) still works too:
-
-```bash
-cd "/d/MCA/Cloud PBL"
-./scripts/demo.sh
-```
-
-### Step 5 — (Optional) Enable the automatic detector
-
-`demo.sh`/the per-case demos are manual. To get the **hands-off** monitoring
-layer — a Lambda that runs all 6 rules on a schedule and emails only on a real
-hit:
-
-```bash
-./scripts/setup-automation.sh
-```
-
-This adds the **`DataLeakDetector`** Lambda (its own scoped IAM role) and an
-**EventBridge** rule on `rate(15 minutes)`. Trigger a cycle immediately:
-
-```bash
-source pbl-state.env
-aws lambda invoke --region "$REGION" --function-name "$DETECTOR_NAME" out.json && cat out.json
-```
-
-An alert email arrives only if a rule matched. New resources are appended to
-`pbl-state.env` so teardown removes them.
-
-> Needs `events:PutRule`, `events:PutTargets`, `lambda:AddPermission`. On an
-> `events:PutRule` AccessDenied, attach `AmazonEventBridgeFullAccess` and re-run.
+The classic all-in-one manual walkthrough (from the PDF) still exists too:
+`./scripts/demo.sh`.
 
 ### Step 6 — Tear everything down (avoid ongoing cost)
 
@@ -219,10 +221,12 @@ that nothing billable remains.
 | `aws: command not found` | Reopen Git Bash after installing AWS CLI v2 |
 | `Unable to locate credentials` | Run `aws configure` again |
 | `jq: command not found` | `winget install jqlang.jq`, reopen Git Bash |
-| Demo query shows 0 rows | CloudTrail lag — wait 10–15 min, re-run the demo |
-| Case 2 never matches | Run it between 00:00–05:00 UTC (script prints the hour) |
+| No alert email after an attack | Detector needs the enabled schedule (`enable-rule`) **and** a confirmed SNS subscription; also allow CloudTrail's 5–15 min lag. Invoke the detector directly to check faster. |
+| Detector reports "0 rule(s) triggered" | CloudTrail hasn't delivered the attack yet — wait a few minutes and invoke again |
+| Inbox flooded with alerts | The 1-min schedule is on and re-alerting on old logs — `disable-rule` |
+| Case 2 never matches | Attack must occur between 00:00–05:00 UTC (script prints the hour) |
 | Case 5 never matches | Fail real **browser** console logins; CLI can't produce `ConsoleLogin` |
-| Case 6 shows no `GetObject` | S3 data events must be on — the script enables them; needs `cloudtrail:PutEventSelectors` |
+| Case 6 shows no `GetObject` | Run `setup-automation.sh` (it enables S3 data events); needs `cloudtrail:PutEventSelectors` |
 | Setup hangs at RDS step | Normal — `rds wait db-instance-available` takes 5–10 min |
 | `teardown.sh` leaves the S3 bucket | Versioned objects remain — re-run teardown (it has a boto3 purge pass) |
 | Permission denied (IAM) | Your IAM user needs EC2, S3, RDS, CloudTrail, Athena, SNS, Lambda, IAM, EventBridge |

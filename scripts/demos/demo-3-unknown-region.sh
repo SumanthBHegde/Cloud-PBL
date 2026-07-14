@@ -29,14 +29,6 @@ done
 info "Done. CloudTrail (multi-region trail) will record awsRegion=$FOREIGN_REGION."
 
 lag_note
-
-run_athena "API activity from unauthorized regions (!= ap-south-1)" \
-"SELECT awsRegion, COUNT(*) AS cnt
- FROM cloudtrail_logs
- WHERE awsRegion NOT IN ('ap-south-1')
- GROUP BY awsRegion
- ORDER BY cnt DESC;"
-
-invoke_detector_if_present
+detected_note "Unknown Region ( API calls from outside ap-south-1 )"
 
 banner "CASE 3 COMPLETE"

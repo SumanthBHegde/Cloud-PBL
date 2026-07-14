@@ -36,14 +36,6 @@ else
 fi
 
 lag_note
-
-run_athena "Bucket policy / ACL tampering (PutBucketPolicy, PutBucketAcl)" \
-"SELECT eventTime, eventName, sourceIPAddress, awsRegion, userIdentity.userName AS who
- FROM cloudtrail_logs
- WHERE eventName IN ('PutBucketPolicy', 'PutBucketAcl')
- ORDER BY eventTime DESC
- LIMIT 25;"
-
-invoke_detector_if_present
+detected_note "Policy Modification ( PutBucketPolicy / PutBucketAcl )"
 
 banner "CASE 4 COMPLETE"

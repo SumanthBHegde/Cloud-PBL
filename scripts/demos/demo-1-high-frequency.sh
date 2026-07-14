@@ -28,14 +28,6 @@ echo
 info "Burst complete. CloudTrail will log ~60 events from a single IP."
 
 lag_note
-
-run_athena "High-volume source IPs (>50 events)" \
-"SELECT sourceIPAddress, COUNT(*) AS access_count
- FROM cloudtrail_logs
- GROUP BY sourceIPAddress
- HAVING COUNT(*) > 50
- ORDER BY access_count DESC;"
-
-invoke_detector_if_present
+detected_note "High-Frequency Access ( >50 events from one IP )"
 
 banner "CASE 1 COMPLETE"

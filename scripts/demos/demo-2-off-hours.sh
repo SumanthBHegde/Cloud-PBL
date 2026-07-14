@@ -41,14 +41,6 @@ done
 info "Done."
 
 lag_note
-
-run_athena "Off-hours activity (00:00-05:00 UTC)" \
-"SELECT eventTime, eventSource, eventName, sourceIPAddress
- FROM cloudtrail_logs
- WHERE hour(from_iso8601_timestamp(eventTime)) BETWEEN 0 AND 5
- ORDER BY eventTime DESC
- LIMIT 25;"
-
-invoke_detector_if_present
+detected_note "Off-Hours Access ( activity 00:00-05:00 UTC )"
 
 banner "CASE 2 COMPLETE"

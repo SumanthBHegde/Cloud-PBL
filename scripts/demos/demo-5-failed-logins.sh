@@ -47,16 +47,6 @@ if command -v mysql >/dev/null 2>&1; then
 fi
 
 lag_note
-
-run_athena "Repeated failed console logins (>=3 from one IP)" \
-"SELECT sourceIPAddress, COUNT(*) AS failed_logins
- FROM cloudtrail_logs
- WHERE eventName = 'ConsoleLogin'
-   AND errorMessage IS NOT NULL
- GROUP BY sourceIPAddress
- HAVING COUNT(*) >= 3
- ORDER BY failed_logins DESC;"
-
-invoke_detector_if_present
+detected_note "Consecutive Failed Logins ( >=3 ConsoleLogin failures from one IP )"
 
 banner "CASE 5 COMPLETE"
