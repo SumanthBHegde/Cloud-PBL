@@ -56,7 +56,7 @@ Cloud PBL/
 ├── scripts/
 │   ├── setup.sh              ← builds the whole stack (VPC→RDS→CloudTrail→Athena→SNS→Lambda)
 │   ├── setup-automation.sh   ← adds the scheduled auto-detector (EventBridge every 1 min)
-│   ├── demo.sh               ← quick end-to-end manual walkthrough (legacy)
+│   ├── demo.sh               ← one-command demo: run attacks + manually trigger the detector
 │   ├── teardown.sh           ← deletes everything (stop AWS billing)
 │   └── demos/                ← attacker scripts: one per scenario (generate activity only)
 │       ├── _common.sh        ← shared helper (loads state, banners, notes)
@@ -195,8 +195,10 @@ aws lambda invoke --region "$REGION" --function-name "$DETECTOR_NAME" out.json &
 > - **Case 6 (bulk download)** relies on S3 **data-event** logging, enabled by
 >   `setup-automation.sh` in Step 4.
 
-The classic all-in-one manual walkthrough (from the PDF) still exists too:
-`./scripts/demo.sh`.
+**Manual-trigger fallback.** Don't want to enable the schedule? `./scripts/demo.sh`
+runs all the attacker scenarios and then **manually invokes the detector** for you
+(same detection, no EventBridge needed). Use `./scripts/demo.sh --skip-attacks` to
+just trigger detection on the existing logs.
 
 ### Step 6 — Tear everything down (avoid ongoing cost)
 

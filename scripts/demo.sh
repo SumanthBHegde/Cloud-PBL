@@ -1,121 +1,85 @@
 #!/usr/bin/env bash
 #==============================================================================
-# Cloud PBL - Data Leak Monitoring System - DEMO SCRIPT
+# Cloud PBL - Data Leak Detection - ONE-COMMAND MANUAL DEMO
 #
-# Runs the end-to-end demo against an already-deployed stack (see setup.sh):
-#   1. Simulate suspicious DB activity (Part E of the PDF)
-#   2. Run the Athena hunt queries against the CloudTrail logs (Part F)
-#   3. Invoke the Lambda to dispatch the SNS alert email (Part H)
+# The attacker scripts in demos/ only GENERATE suspicious activity. Detection +
+# alerting normally happen automatically in the cloud: the DataLeakDetector
+# Lambda runs the 6 SQL rules on an EventBridge schedule and emails on a match.
 #
-# Reads ./pbl-state.env (written by setup.sh) for all resource IDs.
+# That schedule is DISABLED by default (it re-alerts on old logs every minute).
+# THIS script is the manual fallback for a demo without enabling the schedule:
+#
+#   1. Launch the attacker scenarios (generate the activity)         [demos/]
+#   2. Manually invoke the DataLeakDetector Lambda (the trigger)     [detection]
+#   3. It runs the 6 rules and sends the SNS alert email on a match.
 #
 # Usage:
-#   chmod +x demo.sh
-#   ./demo.sh
+#   ./demo.sh                # run all attacker scenarios, then trigger detection
+#   ./demo.sh --skip-attacks # just trigger detection on the existing logs
 #==============================================================================
 set -uo pipefail
 
-STATE_FILE="./pbl-state.env"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEMOS_DIR="$SCRIPT_DIR/demos"
+STATE_FILE="$PROJECT_ROOT/pbl-state.env"
+
 if [ ! -f "$STATE_FILE" ]; then
-  echo "ERROR: $STATE_FILE not found. Run setup.sh first."
+  echo "ERROR: $STATE_FILE not found. Run scripts/setup.sh first."
   exit 1
 fi
 # shellcheck disable=SC1090
 source "$STATE_FILE"
 
-DB_NAME="PBL_DB_${SUFFIX}"
-DB_USER="${DB_USER:-admin}"
-DB_PASS="${DB_PASS:-Admin12345!}"
+SKIP_ATTACKS=0
+[ "${1:-}" = "--skip-attacks" ] && SKIP_ATTACKS=1
 
-step() { echo; echo "=============================================="; echo " $*"; echo "=============================================="; }
+step() { echo; echo "=============================================================="; echo " $*"; echo "=============================================================="; }
 
 #------------------------------------------------------------------------------
-# Part E: simulate suspicious activity against RDS
+# 1. Launch the attacker scenarios (generate suspicious activity)
 #------------------------------------------------------------------------------
-step "[E] Simulating suspicious activity on employee_data"
-
-if ! command -v mysql >/dev/null 2>&1; then
-  echo "[skip] mysql client not installed - skipping Part E"
+if [ "$SKIP_ATTACKS" = "0" ]; then
+  step "[1] Launching attacker scenarios (generating suspicious activity)"
+  if [ -x "$DEMOS_DIR/run-all-demos.sh" ]; then
+    bash "$DEMOS_DIR/run-all-demos.sh"
+  else
+    echo "ERROR: $DEMOS_DIR/run-all-demos.sh not found."
+    exit 1
+  fi
+  echo
+  echo ">>> NOTE: CloudTrail delivers logs to S3 with a 5-15 minute lag, so the"
+  echo "    activity just generated may not be visible to the detector yet. The"
+  echo "    detection below still catches any already-delivered activity."
 else
-  echo ">>> Activity A: massive extraction (3x SELECT *)"
-  for i in 1 2 3; do
-    mysql -h "$DB_ENDPOINT" -P 3306 -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" \
-      -e "SELECT * FROM employee_data;" 2>&1 | grep -v "Warning"
-  done
-
-  echo
-  echo ">>> Activity B: high-value target discovery"
-  mysql -h "$DB_ENDPOINT" -P 3306 -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" \
-    -e "SELECT * FROM employee_data WHERE salary >= 100000;
-        SELECT email FROM employee_data WHERE department = 'Executive Management';" \
-    2>&1 | grep -v "Warning"
-
-  echo
-  echo ">>> Activity C: brute-force login attempts (expected to fail)"
-  for i in 1 2 3; do
-    mysql -h "$DB_ENDPOINT" -P 3306 -u hacker_test -p"wrong_pass_$i" "$DB_NAME" \
-      -e "SELECT 1;" 2>&1 | grep -v "Warning"
-  done
+  step "[1] Skipping attacks (--skip-attacks) - triggering detection only"
 fi
 
 #------------------------------------------------------------------------------
-# Part F: Athena hunt queries
+# 2. Manually trigger detection (fallback for the disabled EventBridge schedule)
 #------------------------------------------------------------------------------
-step "[F] Running Athena hunt queries against CloudTrail logs"
+step "[2] Manually invoking the DataLeakDetector Lambda"
 
-run_athena() {
-  local label="$1" query="$2"
-  echo
-  echo ">>> $label"
-  local qid
-  qid=$(aws athena start-query-execution --region "$REGION" \
-    --query-string "$query" \
-    --query-execution-context "Database=default" \
-    --result-configuration "OutputLocation=s3://${S3_BUCKET}/athena-results/" \
-    --work-group primary \
-    --query 'QueryExecutionId' --output text)
+if [ -z "${DETECTOR_NAME:-}" ]; then
+  echo "ERROR: DETECTOR_NAME not in $STATE_FILE."
+  echo "Deploy the detector first:  ./scripts/setup-automation.sh"
+  exit 1
+fi
 
-  local status
-  for attempt in $(seq 1 20); do
-    status=$(aws athena get-query-execution --region "$REGION" \
-      --query-execution-id "$qid" \
-      --query 'QueryExecution.Status.State' --output text)
-    [ "$status" = "SUCCEEDED" ] || [ "$status" = "FAILED" ] || [ "$status" = "CANCELLED" ] && break
-    sleep 3
-  done
+echo ">>> Running the 6 SQL detection rules via $DETECTOR_NAME ..."
+OUT_FILE="$PROJECT_ROOT/.demo-detector-out.json"
+if aws lambda invoke --region "$REGION" --function-name "$DETECTOR_NAME" "$OUT_FILE" \
+     --query 'StatusCode' --output text >/dev/null 2>&1; then
+  echo "Detector response:"
+  cat "$OUT_FILE"; echo
+  rm -f "$OUT_FILE"
+else
+  echo "ERROR: could not invoke $DETECTOR_NAME (is the automation layer deployed?)."
+  rm -f "$OUT_FILE"
+  exit 1
+fi
 
-  if [ "$status" = "SUCCEEDED" ]; then
-    aws athena get-query-results --region "$REGION" --query-execution-id "$qid" \
-      --query 'ResultSet.Rows[].Data[*].VarCharValue' --output text
-  else
-    echo "    query $status (id=$qid) - CloudTrail logs may not have landed in S3 yet (can take ~5-15 min)"
-  fi
-}
-
-run_athena "High-volume source IPs (>50 events)" \
-  "SELECT sourceIPAddress, COUNT(*) AS access_count FROM cloudtrail_logs GROUP BY sourceIPAddress HAVING COUNT(*) > 50;"
-
-run_athena "Off-hours activity (00:00-05:00 UTC)" \
-  "SELECT eventTime, eventSource, eventName, sourceIPAddress FROM cloudtrail_logs WHERE hour(from_iso8601_timestamp(eventTime)) BETWEEN 0 AND 5;"
-
-run_athena "Bucket policy tampering (PutBucketPolicy)" \
-  "SELECT eventTime, eventSource, eventName, sourceIPAddress, awsRegion FROM cloudtrail_logs WHERE eventName = 'PutBucketPolicy';"
-
-#------------------------------------------------------------------------------
-# Part H: trigger the alert Lambda
-#------------------------------------------------------------------------------
-step "[H] Invoking Lambda to dispatch the data-leak alert email"
-
-OUT_FILE="./demo-lambda-out.json"
-aws lambda invoke --region "$REGION" --function-name "$LAMBDA_NAME" "$OUT_FILE" >/dev/null
-echo "Lambda response:"
-cat "$OUT_FILE"
-echo
-rm -f "$OUT_FILE"
-
-echo
-echo "=============================================="
-echo " DEMO COMPLETE"
-echo "=============================================="
-echo " Check the inbox subscribed to the SNS topic for the alert email."
-echo " (Subscription must be confirmed - see setup.sh output for the link.)"
+step "DEMO COMPLETE"
+echo " If a rule matched, the detector published an alert to the SNS topic."
+echo " Check the inbox subscribed to: $SNS_TOPIC_ARN"
+echo " (The subscription must be confirmed to receive the email.)"
