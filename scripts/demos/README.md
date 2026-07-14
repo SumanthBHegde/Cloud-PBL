@@ -105,10 +105,15 @@ cd "/d/MCA/Cloud PBL/scripts/demos"
 ### `demo-5-failed-logins.sh` — Consecutive Failed Logins
 - **Attack:** brute-force / password guessing against the AWS Console.
 - **Important — part manual:** a `ConsoleLogin` event is **only** produced by the
-  AWS web sign-in page, so it can't be generated from the CLI. The script prints
-  the exact browser steps (sign in with a wrong password 3–4 times). It also fires
-  3 failed **DB** logins as an illustration — but note DB auth failures are *not*
-  CloudTrail events, so only the browser sign-ins feed this rule.
+  AWS web sign-in page, so it can't be generated from the CLI. The script fires 3
+  failed **DB** logins as an illustration, but DB auth failures are *not* CloudTrail
+  events — only browser Console sign-ins feed this rule. To create a real match, in
+  a **web browser**:
+  1. Open `https://<ACCOUNT_ID>.signin.aws.amazon.com/console`
+     (your account ID is in `pbl-state.env`).
+  2. Enter a **valid** IAM user name but a **wrong** password.
+  3. Click **Sign in** and let it fail.
+  4. Repeat **3–4 times** — that's ≥3 failed `ConsoleLogin` events from your IP.
 - **Detected by rule:** **≥ 3** failed `ConsoleLogin` from one IP.
 
 ### `demo-6-bulk-download.sh` — Bulk S3 Download

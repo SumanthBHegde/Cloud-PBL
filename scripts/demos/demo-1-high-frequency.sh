@@ -25,9 +25,6 @@ for i in $(seq 1 60); do
   printf '\r    sent %d/60 calls' "$i"
 done
 echo
-info "Burst complete. CloudTrail will log ~60 events from a single IP."
-
-lag_note
-detected_note "High-Frequency Access ( >50 events from one IP )"
+info "Burst complete. ~60 API calls issued from a single IP."
 
 banner "CASE 1 COMPLETE"

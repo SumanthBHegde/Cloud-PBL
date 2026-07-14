@@ -35,7 +35,4 @@ else
     && info "PutBucketAcl event generated (bucket ACL unchanged)."
 fi
 
-lag_note
-detected_note "Policy Modification ( PutBucketPolicy / PutBucketAcl )"
-
 banner "CASE 4 COMPLETE"

@@ -26,9 +26,6 @@ for i in 1 2 3; do
   aws ec2 describe-availability-zones --region "$FOREIGN_REGION" >/dev/null 2>&1
   aws sts get-caller-identity --region "$FOREIGN_REGION" >/dev/null 2>&1
 done
-info "Done. CloudTrail (multi-region trail) will record awsRegion=$FOREIGN_REGION."
-
-lag_note
-detected_note "Unknown Region ( API calls from outside ap-south-1 )"
+info "Done. API calls issued in region $FOREIGN_REGION."
 
 banner "CASE 3 COMPLETE"

@@ -44,7 +44,4 @@ echo
 rm -f "$TMP/dl.txt"
 info "120 GetObject calls issued from this IP."
 
-lag_note
-detected_note "Bulk S3 Download ( >100 GetObject calls from one IP )"
-
 banner "CASE 6 COMPLETE"

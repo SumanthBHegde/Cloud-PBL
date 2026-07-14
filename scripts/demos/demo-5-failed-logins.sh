@@ -22,20 +22,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 banner "CASE 5 - CONSECUTIVE FAILED LOGINS  ( >=3 ConsoleLogin failures )"
 
-cat <<EOF
->>> To generate real failed-login events (do this in a web browser):
-
-    1. Open the AWS sign-in page:
-         https://${ACCOUNT_ID}.signin.aws.amazon.com/console
-    2. Enter a VALID IAM user name but a WRONG password.
-    3. Click "Sign in" and let it fail.
-    4. Repeat 3-4 times (this creates >=3 failed ConsoleLogin events
-       from your IP - exactly what the rule looks for).
-
-    (We also fire 3 failed DB logins below as an on-host analogue, but note:
-     RDS/MySQL auth failures are NOT CloudTrail events, so they do NOT feed
-     this particular rule - only browser Console sign-ins do.)
-EOF
+echo ">>> This case needs real browser console sign-in failures (the CLI cannot"
+echo "    produce ConsoleLogin events). See scripts/demos/README.md for the steps."
 
 if command -v mysql >/dev/null 2>&1; then
   echo
@@ -45,8 +33,5 @@ if command -v mysql >/dev/null 2>&1; then
       -e "SELECT 1;" 2>&1 | grep -vi "warning" | head -1
   done
 fi
-
-lag_note
-detected_note "Consecutive Failed Logins ( >=3 ConsoleLogin failures from one IP )"
 
 banner "CASE 5 COMPLETE"

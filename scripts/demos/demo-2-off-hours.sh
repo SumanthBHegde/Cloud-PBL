@@ -21,26 +21,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 banner "CASE 2 - OFF-HOURS ACCESS  ( activity 00:00-05:00 UTC )"
 
-UTC_HOUR=$(date -u +%H)
-echo "    Current UTC time : $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
-echo "    Current UTC hour : $UTC_HOUR"
-if [ "$((10#$UTC_HOUR))" -ge 0 ] && [ "$((10#$UTC_HOUR))" -le 5 ]; then
-  echo ">>> You are INSIDE the off-hours window - activity generated now WILL match."
-else
-  warn "You are OUTSIDE 00:00-05:00 UTC, so activity generated right now will NOT"
-  warn "match this rule. The query still reports any PAST events that landed in"
-  warn "the off-hours window. To force a live match, run this demo between"
-  warn "00:00 and 05:00 UTC."
-fi
+echo "    Current UTC time : $(date -u '+%Y-%m-%d %H:%M:%S') UTC   (rule matches hours 00-05)"
 
 echo
-echo ">>> Generating a few API events (timestamped 'now' by CloudTrail) ..."
+echo ">>> Generating a few API events ..."
 for i in 1 2 3 4 5; do
   aws sts get-caller-identity --region "$REGION" >/dev/null 2>&1
 done
-info "Done."
-
-lag_note
-detected_note "Off-Hours Access ( activity 00:00-05:00 UTC )"
+info "Done. 5 API calls issued from this IP."
 
 banner "CASE 2 COMPLETE"
