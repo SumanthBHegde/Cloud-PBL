@@ -16,15 +16,6 @@
 #==============================================================================
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-banner "CASE 1 - HIGH-FREQUENCY ACCESS  ( >50 requests from one IP )"
-
-echo ">>> Generating burst of API calls (60x) from this machine's IP ..."
-echo "    (each call is a CloudTrail management event tagged with our source IP)"
 for i in $(seq 1 60); do
   aws sts get-caller-identity --region "$REGION" >/dev/null 2>&1
-  printf '\r    sent %d/60 calls' "$i"
 done
-echo
-info "Burst complete. ~60 API calls issued from a single IP."
-
-banner "CASE 1 COMPLETE"

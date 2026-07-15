@@ -17,22 +17,13 @@
 #==============================================================================
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-banner "CASE 4 - POLICY MODIFICATION  ( PutBucketPolicy / PutBucketAcl )"
-
 TMP="$PROJECT_ROOT/.pbl-tmp"
 mkdir -p "$TMP"
 POLICY_FILE="$TMP/case4-bucket-policy.json"
 trap 'rm -f "$POLICY_FILE"' EXIT
 
-echo ">>> Reading the current bucket policy for $S3_BUCKET ..."
 if aws s3api get-bucket-policy --bucket "$S3_BUCKET" --query Policy --output text > "$POLICY_FILE" 2>/dev/null; then
-  echo ">>> Re-applying the SAME policy (no-op) to emit a PutBucketPolicy event ..."
-  aws s3api put-bucket-policy --bucket "$S3_BUCKET" --policy "file://$POLICY_FILE" \
-    && info "PutBucketPolicy event generated (bucket permissions unchanged)."
+  aws s3api put-bucket-policy --bucket "$S3_BUCKET" --policy "file://$POLICY_FILE" >/dev/null 2>&1
 else
-  warn "Could not read existing bucket policy; emitting a PutBucketAcl event instead."
-  aws s3api put-bucket-acl --bucket "$S3_BUCKET" --acl private \
-    && info "PutBucketAcl event generated (bucket ACL unchanged)."
+  aws s3api put-bucket-acl --bucket "$S3_BUCKET" --acl private >/dev/null 2>&1
 fi
-
-banner "CASE 4 COMPLETE"

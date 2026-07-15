@@ -7,9 +7,9 @@
 # automatically in the cloud via the DataLeakDetector Lambda (EventBridge),
 # so the demos here do NOT run any SQL themselves.
 #
-# This file:
-#   - loads resource IDs from ../../pbl-state.env (written by setup.sh)
-#   - provides pretty banners (banner / info / warn / rule)
+# This file loads resource IDs from ../../pbl-state.env (written by setup.sh) so
+# each attacker script can reach the live stack. The scripts themselves produce
+# NO console output - they only perform the actions, like a real attacker.
 #
 # Explanations (CloudTrail lag, how automatic detection works, per-case caveats)
 # live in scripts/demos/README.md, NOT in these scripts.
@@ -36,15 +36,4 @@ source "$STATE_FILE"
 DB_NAME="PBL_DB_${SUFFIX}"
 DB_USER="${DB_USER:-admin}"
 DB_PASS="${DB_PASS:-Admin12345!}"
-
-# --- pretty output -----------------------------------------------------------
-banner() {
-  echo
-  echo "=============================================================="
-  echo " $*"
-  echo "=============================================================="
-}
-info() { echo "    $*"; }
-warn() { echo "[!] $*"; }
-rule() { echo "--------------------------------------------------------------"; }
 

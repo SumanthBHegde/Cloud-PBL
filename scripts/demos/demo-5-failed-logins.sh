@@ -20,18 +20,12 @@
 #==============================================================================
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-banner "CASE 5 - CONSECUTIVE FAILED LOGINS  ( >=3 ConsoleLogin failures )"
-
-echo ">>> This case needs real browser console sign-in failures (the CLI cannot"
-echo "    produce ConsoleLogin events). See scripts/demos/README.md for the steps."
-
+# ConsoleLogin failures must be produced from the AWS browser sign-in page (the
+# CLI cannot emit them) - see the header / scripts/demos/README.md.
+# The loop below is the illustrative RDS side only.
 if command -v mysql >/dev/null 2>&1; then
-  echo
-  echo ">>> (Illustrative) 3 failed DB login attempts against RDS ..."
   for i in 1 2 3; do
     mysql -h "$DB_ENDPOINT" -P 3306 -u hacker_test -p"wrong_pass_$i" "$DB_NAME" \
-      -e "SELECT 1;" 2>&1 | grep -vi "warning" | head -1
+      -e "SELECT 1;" >/dev/null 2>&1
   done
 fi
-
-banner "CASE 5 COMPLETE"

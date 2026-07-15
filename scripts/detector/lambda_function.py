@@ -103,7 +103,25 @@ def run_query(sql):
 def lambda_handler(event, context):
     triggered = []
 
-    for name, trigger, sql in RULES:
+    # Optional: scope this run to a SINGLE rule by passing {"rule": "<name>"} in
+    # the invoke payload (used by the per-demo triggers so running one attacker
+    # script only alerts on that one case, regardless of other logs in the
+    # window). Matching is case-insensitive substring, so {"rule": "region"}
+    # selects "Unknown Region". No "rule" key => run all 6 rules.
+    wanted = ""
+    if isinstance(event, dict) and event.get("rule"):
+        wanted = str(event["rule"]).strip().lower()
+
+    active_rules = RULES
+    if wanted:
+        active_rules = [r for r in RULES if wanted in r[0].lower()]
+        if not active_rules:
+            names = ", ".join(r[0] for r in RULES)
+            print(f"No rule matches '{wanted}'. Available: {names}")
+            return {"statusCode": 400, "body": f"No rule matches '{wanted}'."}
+        print(f"Scoped to rule(s): {', '.join(r[0] for r in active_rules)}")
+
+    for name, trigger, sql in active_rules:
         try:
             data_rows = run_query(sql)
         except Exception as e:

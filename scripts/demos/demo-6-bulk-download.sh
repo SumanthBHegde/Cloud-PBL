@@ -21,11 +21,7 @@
 #==============================================================================
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-banner "CASE 6 - BULK S3 DOWNLOAD  ( >100 GetObject calls from one IP )"
-
 # Seed a few objects to read.
-echo
-echo ">>> Uploading 5 sample objects to download ..."
 TMP="$PROJECT_ROOT/.pbl-tmp"; mkdir -p "$TMP"
 for n in 1 2 3 4 5; do
   echo "secret-record-$n confidential payload" > "$TMP/leak_$n.txt"
@@ -33,15 +29,9 @@ for n in 1 2 3 4 5; do
 done
 rm -f "$TMP"/leak_*.txt
 
-echo ">>> Downloading objects 120 times (simulating bulk exfiltration) ..."
 for i in $(seq 1 120); do
   obj=$(( (i % 5) + 1 ))
   aws s3api get-object --bucket "$S3_BUCKET" --key "demo-data/leak_${obj}.txt" \
     "$TMP/dl.txt" --region "$REGION" >/dev/null 2>&1
-  printf '\r    downloaded %d/120 objects' "$i"
 done
-echo
 rm -f "$TMP/dl.txt"
-info "120 GetObject calls issued from this IP."
-
-banner "CASE 6 COMPLETE"

@@ -19,15 +19,6 @@
 #==============================================================================
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-banner "CASE 2 - OFF-HOURS ACCESS  ( activity 00:00-05:00 UTC )"
-
-echo "    Current UTC time : $(date -u '+%Y-%m-%d %H:%M:%S') UTC   (rule matches hours 00-05)"
-
-echo
-echo ">>> Generating a few API events ..."
 for i in 1 2 3 4 5; do
   aws sts get-caller-identity --region "$REGION" >/dev/null 2>&1
 done
-info "Done. 5 API calls issued from this IP."
-
-banner "CASE 2 COMPLETE"

@@ -18,14 +18,8 @@
 #==============================================================================
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-banner "CASE 3 - UNKNOWN REGION  ( API call from outside ap-south-1 )"
-
 FOREIGN_REGION="us-east-1"
-echo ">>> Making read-only API calls in a foreign region: $FOREIGN_REGION ..."
 for i in 1 2 3; do
   aws ec2 describe-availability-zones --region "$FOREIGN_REGION" >/dev/null 2>&1
   aws sts get-caller-identity --region "$FOREIGN_REGION" >/dev/null 2>&1
 done
-info "Done. API calls issued in region $FOREIGN_REGION."
-
-banner "CASE 3 COMPLETE"
