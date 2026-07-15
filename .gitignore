@@ -3,3 +3,5 @@ pbl-state.env
 .claude
 *.log
 .pbl-tmp
+
+__pycache__/

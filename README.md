@@ -56,8 +56,11 @@ Cloud PBL/
 ├── scripts/
 │   ├── setup.sh              ← builds the whole stack (VPC→RDS→CloudTrail→Athena→SNS→Lambda)
 │   ├── setup-automation.sh   ← adds the scheduled auto-detector (EventBridge every 1 min)
+│   ├── update-detector.sh    ← redeploy the detector Lambda after editing its code
 │   ├── demo.sh               ← one-command demo: run attacks + manually trigger the detector
 │   ├── teardown.sh           ← deletes everything (stop AWS billing)
+│   ├── detector/
+│   │   └── lambda_function.py ← the DataLeakDetector code (6 SQL rules) — edit this
 │   └── demos/                ← attacker scripts: one per scenario (generate activity only)
 │       ├── _common.sh        ← shared helper (loads state, banners, notes)
 │       ├── demo-1-high-frequency.sh
@@ -200,6 +203,33 @@ runs all the attacker scenarios and then **manually invokes the detector** for y
 (same detection, no EventBridge needed). Use `./scripts/demo.sh --skip-attacks` to
 just trigger detection on the existing logs.
 
+### Changing the detection logic
+
+The detector's code — the 6 SQL rules — lives in one editable file:
+**`scripts/detector/lambda_function.py`**. Its config (region, bucket, SNS topic,
+lookback window) is passed as Lambda **environment variables**, not hard-coded.
+
+To change a rule (or add a 7th), edit that file and redeploy — no infrastructure
+is recreated:
+
+```bash
+./scripts/update-detector.sh
+```
+
+**Time-window scoping.** Each rule only looks at events from the **last
+`DETECT_WINDOW_MIN` minutes** (default **20**), so old attack patterns already in
+the logs **age out automatically** — a fresh demo shows only the case(s) you just
+triggered, instead of every case that ever happened. Adjust the window when
+redeploying:
+
+```bash
+DETECT_WINDOW_MIN=30 ./scripts/update-detector.sh
+```
+
+> Because CloudTrail's delivery lag (up to ~15 min) eats into this window, keep it
+> comfortably larger than the lag. If a freshly-triggered case doesn't show, bump
+> `DETECT_WINDOW_MIN` to 30.
+
 ### Step 6 — Tear everything down (avoid ongoing cost)
 
 ```bash
@@ -225,6 +255,8 @@ that nothing billable remains.
 | `jq: command not found` | `winget install jqlang.jq`, reopen Git Bash |
 | No alert email after an attack | Detector needs the enabled schedule (`enable-rule`) **and** a confirmed SNS subscription; also allow CloudTrail's 5–15 min lag. Invoke the detector directly to check faster. |
 | Detector reports "0 rule(s) triggered" | CloudTrail hasn't delivered the attack yet — wait a few minutes and invoke again |
+| Every case always triggers | Old logs still in the window — rules are scoped to `DETECT_WINDOW_MIN` (default 20 min); wait for old activity to age out, or clear the S3 `AWSLogs/` prefix |
+| A fresh case won't trigger | Window too tight vs CloudTrail lag — `DETECT_WINDOW_MIN=30 ./scripts/update-detector.sh` |
 | Inbox flooded with alerts | The 1-min schedule is on and re-alerting on old logs — `disable-rule` |
 | Case 2 never matches | Attack must occur between 00:00–05:00 UTC (script prints the hour) |
 | Case 5 never matches | Fail real **browser** console logins; CLI can't produce `ConsoleLogin` |

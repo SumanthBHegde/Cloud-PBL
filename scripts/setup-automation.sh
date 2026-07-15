@@ -20,6 +20,9 @@
 #==============================================================================
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DETECTOR_SRC="$SCRIPT_DIR/detector/lambda_function.py"
+
 STATE_FILE="./pbl-state.env"
 if [ ! -f "$STATE_FILE" ]; then
   echo "ERROR: $STATE_FILE not found. Run setup.sh first."
@@ -141,139 +144,20 @@ sleep 15
 
 #------------------------------------------------------------------------------
 # 2. Detector Lambda code
+#    The code lives in scripts/detector/lambda_function.py (a real file so
+#    teammates can edit it and redeploy via scripts/update-detector.sh). Its
+#    config (REGION / S3_BUCKET / SNS_TOPIC_ARN / DETECT_WINDOW_MIN) is passed as
+#    Lambda environment variables in step 3, not baked into the code.
 #------------------------------------------------------------------------------
 echo
-echo ">>> [2] Packaging detector Lambda code ..."
+echo ">>> [2] Packaging detector Lambda code (from $DETECTOR_SRC) ..."
+if [ ! -f "$DETECTOR_SRC" ]; then
+  echo "ERROR: detector source not found: $DETECTOR_SRC"
+  exit 1
+fi
 WORK="$TMPDIR_LOCAL/detector-build"
 mkdir -p "$WORK"
-cat > "$WORK/lambda_function.py" <<EOF
-"""
-DataLeakDetector - scheduled every 15 min by EventBridge.
-
-Runs the 6 SQL detection rules from SQL_Data_Leak_Detection_AWS.pptx (slide 12)
-against the cloudtrail_logs Athena table, and publishes an SNS alert ONLY when
-a rule returns one or more rows (i.e. an anomaly is detected).
-"""
-import boto3
-import time
-
-REGION       = "${REGION}"
-DATABASE     = "default"
-WORKGROUP    = "primary"
-OUTPUT_LOC   = "s3://${S3_BUCKET}/athena-results/"
-TOPIC_ARN    = "${SNS_TOPIC_ARN}"
-
-athena = boto3.client("athena", region_name=REGION)
-sns    = boto3.client("sns", region_name=REGION)
-
-# Each rule: (name, trigger description, SQL). Queries are written so that
-# ANY returned row means the rule fired.
-RULES = [
-    ("High-Frequency Access", ">50 requests / IP / hour",
-     "SELECT sourceIPAddress, COUNT(*) AS access_count "
-     "FROM cloudtrail_logs GROUP BY sourceIPAddress HAVING COUNT(*) > 50"),
-    ("Off-Hours Access", "activity between 00:00-05:00 UTC",
-     "SELECT eventTime, eventSource, eventName, sourceIPAddress "
-     "FROM cloudtrail_logs "
-     "WHERE hour(from_iso8601_timestamp(eventTime)) BETWEEN 0 AND 5"),
-    ("Unknown Region", "API calls from unauthorized regions",
-     "SELECT awsRegion, COUNT(*) AS cnt FROM cloudtrail_logs "
-     "WHERE awsRegion NOT IN ('${REGION}') GROUP BY awsRegion"),
-    ("Policy Modification", "PutBucketPolicy / PutBucketAcl events",
-     "SELECT eventTime, eventName, sourceIPAddress, awsRegion "
-     "FROM cloudtrail_logs "
-     "WHERE eventName IN ('PutBucketPolicy', 'PutBucketAcl')"),
-    ("Consecutive Failed Logins", ">=3 ConsoleLogin failures",
-     "SELECT sourceIPAddress, COUNT(*) AS fails FROM cloudtrail_logs "
-     "WHERE eventName = 'ConsoleLogin' AND errorMessage IS NOT NULL "
-     "GROUP BY sourceIPAddress HAVING COUNT(*) >= 3"),
-    ("Bulk S3 Download", ">100 GetObject calls",
-     "SELECT sourceIPAddress, COUNT(*) AS downloads FROM cloudtrail_logs "
-     "WHERE eventName = 'GetObject' GROUP BY sourceIPAddress HAVING COUNT(*) > 100"),
-]
-
-
-def run_query(sql):
-    qid = athena.start_query_execution(
-        QueryString=sql,
-        QueryExecutionContext={"Database": DATABASE},
-        ResultConfiguration={"OutputLocation": OUTPUT_LOC},
-        WorkGroup=WORKGROUP,
-    )["QueryExecutionId"]
-
-    # poll up to ~50s for completion
-    for _ in range(25):
-        state = athena.get_query_execution(QueryExecutionId=qid)["QueryExecution"]["Status"]["State"]
-        if state in ("SUCCEEDED", "FAILED", "CANCELLED"):
-            break
-        time.sleep(2)
-
-    if state != "SUCCEEDED":
-        print(f"  query {state}: {sql[:60]}...")
-        return []
-
-    rows = athena.get_query_results(QueryExecutionId=qid)["ResultSet"]["Rows"]
-    # row[0] is the header; data rows are everything after it
-    return rows[1:]
-
-
-def lambda_handler(event, context):
-    triggered = []
-
-    for name, trigger, sql in RULES:
-        try:
-            data_rows = run_query(sql)
-        except Exception as e:
-            print(f"Rule '{name}' query error: {e}")
-            continue
-
-        if data_rows:
-            # summarise first matching row for the alert body
-            first = [c.get("VarCharValue", "") for c in data_rows[0]["Data"]]
-            triggered.append({
-                "rule": name,
-                "trigger": trigger,
-                "match_count": len(data_rows),
-                "sample": ", ".join(first),
-            })
-
-    if not triggered:
-        print("No anomalies detected this cycle.")
-        return {"statusCode": 200, "body": "No anomalies detected."}
-
-    # Build a structured alert message (slide 13 style)
-    lines = [
-        "SECURITY ALERT - SUSPICIOUS ACTIVITY DETECTED",
-        "=" * 45,
-        "",
-        f"{len(triggered)} detection rule(s) triggered in the last monitoring cycle:",
-        "",
-    ]
-    for t in triggered:
-        lines += [
-            f"Rule Triggered : {t['rule']}",
-            f"Condition      : {t['trigger']}",
-            f"Matches        : {t['match_count']}",
-            f"Sample         : {t['sample']}",
-            "-" * 45,
-        ]
-    lines += [
-        "",
-        "Recommended Action:",
-        "  -> Review CloudTrail logs immediately",
-        "  -> Block source IP if unauthorized",
-        "  -> Check IAM credentials for compromise",
-    ]
-    message = "\n".join(lines)
-
-    sns.publish(
-        TopicArn=TOPIC_ARN,
-        Subject="[SECURITY] Data Leak Alert",
-        Message=message,
-    )
-    print(f"Alert published: {len(triggered)} rule(s) triggered.")
-    return {"statusCode": 200, "body": f"{len(triggered)} rule(s) triggered; alert sent."}
-EOF
+cp "$DETECTOR_SRC" "$WORK/lambda_function.py"
 
 ( cd "$WORK" && zip -q lambda.zip lambda_function.py )
 
@@ -289,7 +173,8 @@ aws lambda create-function --region "$REGION" \
   --handler lambda_function.lambda_handler \
   --zip-file "fileb://$WORK/lambda.zip" \
   --timeout 120 \
-  --memory-size 256 >/dev/null
+  --memory-size 256 \
+  --environment "Variables={REGION=$REGION,S3_BUCKET=$S3_BUCKET,SNS_TOPIC_ARN=$SNS_TOPIC_ARN,DETECT_WINDOW_MIN=20}" >/dev/null
 save DETECTOR_NAME "$DETECTOR_NAME"
 DETECTOR_ARN=$(aws lambda get-function --region "$REGION" \
   --function-name "$DETECTOR_NAME" --query 'Configuration.FunctionArn' --output text)
